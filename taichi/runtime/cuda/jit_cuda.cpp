@@ -236,9 +236,7 @@ std::unique_ptr<JITSession> create_llvm_jit_session_cuda(
 std::unique_ptr<JITSession> create_llvm_jit_session_cuda(
     TaichiLLVMContext *tlctx,
     CompileConfig *config,
-    Arch arch) {
-  TI_NOT_IMPLEMENTED
-}
+    Arch arch){TI_NOT_IMPLEMENTED}
 #endif
 
 TLANG_NAMESPACE_END
