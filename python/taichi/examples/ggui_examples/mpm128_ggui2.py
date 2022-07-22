@@ -1,4 +1,5 @@
 import taichi as ti
+import pdb
 
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
@@ -28,28 +29,28 @@ gravity = ti.Vector.field(2, dtype=float, shape=())
 attractor_strength = ti.field(dtype=float, shape=())
 attractor_pos = ti.Vector.field(2, dtype=float, shape=())
 
-group_size = n_particles // 3
+group_size = n_particles // 2
 water = ti.Vector.field(2, dtype=float, shape=group_size)  # position
 jelly = ti.Vector.field(2, dtype=float, shape=group_size)  # position
 snow = ti.Vector.field(2, dtype=float, shape=group_size)  # position
 mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
 
-
 @ti.kernel
 def substep():
     for i, j in grid_m:
+        # gri_v & grid_m: [n_grd, n_grid]
         grid_v[i, j] = [0, 0]
         grid_m[i, j] = 0
-    for p in x:  # Particle state update and scatter to grid (P2G)
-        base = (x[p] * inv_dx - 0.5).cast(int)
-        fx = x[p] * inv_dx - base.cast(float)
+    for p in x:  # x: [n_particles] Particle state update and scatter to grid (P2G)
+        base = (x[p] * inv_dx - 0.5).cast(int)  # index of the grid
+        fx = x[p] * inv_dx - base.cast(float)   # location in the grid
         # Quadratic kernels  [http://mpm.graphics   Eqn. 123, with x=fx, fx-1,fx-2]
         w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]
         # deformation gradient update
         F[p] = (ti.Matrix.identity(float, 2) + dt * C[p]) @ F[p]
         # Hardening coefficient: snow gets harder when compressed
-        h = max(0.1, min(5, ti.exp(10 * (1.0 - Jp[p]))))
-        if material[p] == 1:  # jelly, make it softer
+        h = max(0.1, min(5, ti.exp(10 * (1.0 - Jp[p]))))  #   Jp: [n_particles], plastic deformation
+        if material[p] == 2:  # jelly, make it softer
             h = 0.3
         mu, la = mu_0 * h, lambda_0 * h
         if material[p] == 0:  # liquid
@@ -58,7 +59,7 @@ def substep():
         J = 1.0
         for d in ti.static(range(2)):
             new_sig = sig[d, d]
-            if material[p] == 2:  # Snow
+            if material[p] == 1:  # Snow
                 new_sig = min(max(sig[d, d], 1 - 2.5e-2),
                               1 + 4.5e-3)  # Plasticity
             Jp[p] *= sig[d, d] / new_sig
@@ -67,7 +68,7 @@ def substep():
         if material[p] == 0:
             # Reset deformation gradient to avoid numerical instability
             F[p] = ti.Matrix.identity(float, 2) * ti.sqrt(J)
-        elif material[p] == 2:
+        elif material[p] == 1:
             # Reconstruct elastic deformation gradient after plasticity
             F[p] = U @ sig @ V.transpose()
         stress = 2 * mu * (F[p] - U @ V.transpose()) @ F[p].transpose(
@@ -133,8 +134,8 @@ def reset():
 def render():
     for i in range(group_size):
         water[i] = x[i]
-        jelly[i] = x[i + group_size]
-        snow[i] = x[i + 2 * group_size]
+        # jelly[i] = x[i + group_size]
+        snow[i] = x[i + group_size]
 
 
 def main():
@@ -156,25 +157,26 @@ def main():
                 reset()
             elif window.event.key in [ti.ui.ESCAPE]:
                 break
-        if window.event is not None:
-            gravity[None] = [0, 0]  # if had any event
-        if window.is_pressed(ti.ui.LEFT, 'a'):
-            gravity[None][0] = -1
-        if window.is_pressed(ti.ui.RIGHT, 'd'):
-            gravity[None][0] = 1
-        if window.is_pressed(ti.ui.UP, 'w'):
-            gravity[None][1] = 1
-        if window.is_pressed(ti.ui.DOWN, 's'):
-            gravity[None][1] = -1
-        mouse = window.get_cursor_pos()
-        mouse_circle[0] = ti.Vector([mouse[0], mouse[1]])
-        canvas.circles(mouse_circle, color=(0.2, 0.4, 0.6), radius=0.05)
-        attractor_pos[None] = [mouse[0], mouse[1]]
-        attractor_strength[None] = 0
-        if window.is_pressed(ti.ui.LMB):
-            attractor_strength[None] = 1
-        if window.is_pressed(ti.ui.RMB):
-            attractor_strength[None] = -1
+        # if window.event is not None:
+        #     gravity[None] = [0, 0]  # if had any event
+        # if window.is_pressed(ti.ui.LEFT, 'a'):
+        #     gravity[None][0] = -1
+        # if window.is_pressed(ti.ui.RIGHT, 'd'):
+        #     gravity[None][0] = 1
+        # if window.is_pressed(ti.ui.UP, 'w'):
+        #     gravity[None][1] = 1
+        # if window.is_pressed(ti.ui.DOWN, 's'):
+        #     gravity[None][1] = -1
+        gravity[None][1] = -1
+        # mouse = window.get_cursor_pos()
+        # mouse_circle[0] = ti.Vector([mouse[0], mouse[1]])
+        # canvas.circles(mouse_circle, color=(0.2, 0.4, 0.6), radius=0.05)
+        # attractor_pos[None] = [mouse[0], mouse[1]]
+        # attractor_strength[None] = 0
+        # if window.is_pressed(ti.ui.LMB):
+        #     attractor_strength[None] = 1
+        # if window.is_pressed(ti.ui.RMB):
+        #     attractor_strength[None] = -1
 
         for s in range(int(2e-3 // dt)):
             substep()
