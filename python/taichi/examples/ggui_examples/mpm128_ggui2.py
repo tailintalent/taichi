@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
 import taichi as ti
 import pdb
 
@@ -34,6 +40,10 @@ water = ti.Vector.field(2, dtype=float, shape=group_size)  # position
 jelly = ti.Vector.field(2, dtype=float, shape=group_size)  # position
 snow = ti.Vector.field(2, dtype=float, shape=group_size)  # position
 mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
+
+
+# In[ ]:
+
 
 @ti.kernel
 def substep():
@@ -119,10 +129,16 @@ def substep():
 @ti.kernel
 def reset():
     for i in range(n_particles):
-        x[i] = [
-            ti.random() * 0.2 + 0.3 + 0.10 * (i // group_size),
-            ti.random() * 0.2 + 0.05 + 0.32 * (i // group_size)
-        ]
+        if i < group_size:
+            x[i] = [
+                ti.random() * 1,
+                ti.random() * 0.2
+            ]
+        else:
+            x[i] = [
+                ti.random() * 0.2 + 0.3 + 0.10 * (i // group_size),
+                ti.random() * 0.2 + 0.05 + 0.32 * (i // group_size)
+            ]
         material[i] = i // group_size  # 0: fluid 1: jelly 2: snow
         v[i] = [0, 0]
         F[i] = ti.Matrix([[1, 0], [0, 1]])
@@ -136,6 +152,9 @@ def render():
         water[i] = x[i]
         # jelly[i] = x[i + group_size]
         snow[i] = x[i + group_size]
+
+
+# In[ ]:
 
 
 def main():
@@ -188,5 +207,9 @@ def main():
         window.show()
 
 
+# In[ ]:
+
+
 if __name__ == '__main__':
     main()
+
