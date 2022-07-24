@@ -5,6 +5,8 @@
 
 
 import taichi as ti
+import numpy as np
+import time
 import pdb
 
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
@@ -147,17 +149,152 @@ def reset():
 
 
 @ti.kernel
+def reset_other_fields(n_particles: int):
+    for i in range(n_particles):
+        material[i] = 0  # 0: fluid 1: jelly 2: snow
+        v[i] = [0, 0]
+        F[i] = ti.Matrix([[1, 0], [0, 1]])
+        Jp[i] = 1
+        C[i] = ti.Matrix.zero(float, 2, 2)
+
+
+@ti.kernel
 def render():
-    for i in range(group_size):
-        water[i] = x[i]
-        # jelly[i] = x[i + group_size]
-        snow[i] = x[i + group_size]
+    for i in range(n_particles):
+        if i < n_part_particle:
+            particle[i] = x[i]
+        else:
+            fluid[i - n_part_particle] = x[i]
+
+
+def sample_shape():
+    y1 = np.random.rand()*0.15 + 0.05
+    y2 = np.random.rand()*0.15 + 0.05
+    shape = [
+        ((0, y1), (1, y2), 0),
+    ]
+    return shape
+
+
+def get_fluid(fluid_shape, n_part):
+    height = 0.2
+    x_np = np.stack([
+        np.random.rand(n_part) * 1,
+        np.random.rand(n_part) * height,
+    ], -1)
+    lx = x_np[:, 0]
+    ly = x_np[:, 1]
+    mask = np.ones(len(x_np)).astype(bool)
+    for shape_ele in fluid_shape:
+        (x1, y1), (x2, y2), direction = shape_ele
+        out = (ly - y1) - (y2 - y1)/(x2 - x1)*(lx - x1)
+        if direction == 1:
+            mask_ele = out >= 0
+        elif direction == 0:
+            mask_ele = out <= 0
+        else:
+            raise
+        mask = mask & mask_ele
+    x_fluid = x_np[mask]
+    return x_fluid
+
+
+def sample_rect_shape():
+    x1 = np.random.rand() * 0.2 + 0.25
+    x2 = np.random.rand() * 0.2 + 0.75
+    y1 = np.random.rand() * 0.2 + 0.2
+    y2 = np.random.rand() * 0.2 + 0.8
+    rect_shape = (x1, y1), (x2, y2)
+    return rect_shape
+
+
+def get_particles(rect_shape, n_part):
+    """
+    lowerleft: (x1, y1)
+    upperright: (x2, y2)
+    """
+    (x1, y1), (x2, y2) = rect_shape
+    lx_np = np.random.rand(n_part, 1) * (x2 - x1) + x1
+    ly_np = np.random.rand(n_part, 1) * (y2 - y1) + y1
+    x_np = np.concatenate([lx_np, ly_np], -1)
+    return x_np
+
+def plot_part(x):
+    import matplotlib.pylab as plt
+    if not isinstance(x, np.ndarray):
+        x = x.to_numpy()
+    plt.plot(x[:,0], x[:,1], ".")
+    plt.xlim([0,1])
+    plt.ylim([0,1])
+    plt.show()
 
 
 # In[ ]:
 
 
-def main():
+def reset_all():
+    # Set up x:
+    fluid_shape = sample_shape()
+    x_fluid = get_fluid(fluid_shape, n_part=max_n_part_fluid).astype(np.float32)
+    n_part_fluid = len(x_fluid)
+    rect_shape = sample_rect_shape()
+    x_particle = get_particles(rect_shape, n_part=n_part_particle).astype(np.float32)
+    x_combine = np.concatenate([x_particle, x_fluid]).astype(np.float32)
+    n_particles = n_part_fluid + n_part_particle
+    x = ti.Vector.field(2, dtype=float, shape=n_particles)
+    x.from_numpy(x_combine)
+    fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
+    particle = ti.Vector.field(2, dtype=float, shape=n_part_particle)
+    fluid.from_numpy(x_fluid)
+    particle.from_numpy(x_particle)
+
+    # Initialize up other fields:
+    v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
+    C = ti.Matrix.field(2, 2, dtype=float,
+                        shape=n_particles)  # affine velocity field
+    F = ti.Matrix.field(2, 2, dtype=float,
+                        shape=n_particles)  # deformation gradient
+    material = ti.field(dtype=int, shape=n_particles)  # material id
+
+    # Reset other fields:
+    reset_other_fields(n_particles)
+    
+    return x, v, C, F, material, Jp, fluid, particle, n_particles, n_part_fluid
+
+
+# In[ ]:
+
+
+gravity_amp = 1
+max_n_part_fluid = 300
+n_part_particle = 300
+
+fluid_shape = sample_shape()
+x_fluid = get_fluid(fluid_shape, n_part=max_n_part_fluid).astype(np.float32)
+n_part_fluid = len(x_fluid)
+print(n_part_fluid)
+rect_shape = sample_rect_shape()
+x_particle = get_particles(rect_shape, n_part=n_part_particle).astype(np.float32)
+x_combine = np.concatenate([x_particle, x_fluid]).astype(np.float32)
+n_particles = n_part_fluid + n_part_particle
+x = ti.Vector.field(2, dtype=float, shape=n_particles)
+x.from_numpy(x_combine)
+fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
+particle = ti.Vector.field(2, dtype=float, shape=n_part_particle)
+fluid.from_numpy(x_fluid)
+particle.from_numpy(x_particle)
+
+# Initialize up other fields:
+v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
+C = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # affine velocity field
+F = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # deformation gradient
+material = ti.field(dtype=int, shape=n_particles)  # material id
+Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
+
+# Reset other fields:
+reset_other_fields(n_particles)
+
+def main(fluid, particle):
     print(
         "[Hint] Use WSAD/arrow keys to control gravity. Use left/right mouse buttons to attract/repel. Press R to reset."
     )
@@ -167,13 +304,12 @@ def main():
     canvas = window.get_canvas()
     radius = 0.003
 
-    reset()
     gravity[None] = [0, -1]
-
+    count = 0
     while window.running:
         if window.get_event(ti.ui.PRESS):
             if window.event.key == 'r':
-                reset()
+                x, v, C, F, material, Jp, fluid, particle, n_particles, n_part_fluid = reset_all()
             elif window.event.key in [ti.ui.ESCAPE]:
                 break
         # if window.event is not None:
@@ -186,7 +322,7 @@ def main():
         #     gravity[None][1] = 1
         # if window.is_pressed(ti.ui.DOWN, 's'):
         #     gravity[None][1] = -1
-        gravity[None][1] = -1
+        gravity[None][1] = -gravity_amp
         # mouse = window.get_cursor_pos()
         # mouse_circle[0] = ti.Vector([mouse[0], mouse[1]])
         # canvas.circles(mouse_circle, color=(0.2, 0.4, 0.6), radius=0.05)
@@ -199,17 +335,22 @@ def main():
 
         for s in range(int(2e-3 // dt)):
             substep()
+        time.sleep(0.1)
         render()
+        print(fluid.to_numpy()[0], particle.to_numpy()[0])
+        if count in [0, 1, 2]:
+            time.sleep(3)
         canvas.set_background_color((0.067, 0.184, 0.255))
-        canvas.circles(water, radius=radius, color=(0, 0.5, 0.5))
-        canvas.circles(jelly, radius=radius, color=(0.93, 0.33, 0.23))
-        canvas.circles(snow, radius=radius, color=(1, 1, 1))
+        canvas.circles(fluid, radius=radius, color=(0, 0.5, 0.5))
+        # # canvas.circles(jelly, radius=radius, color=(0.93, 0.33, 0.23))
+        canvas.circles(particle, radius=radius, color=(0, 0.5, 0.5))
         window.show()
+        count += 1
 
 
 # In[ ]:
 
 
 if __name__ == '__main__':
-    main()
+    main(fluid, particle)
 
