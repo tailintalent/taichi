@@ -281,12 +281,14 @@ def remove_too_near(x_np, threshold, mode="simu"):
 # In[ ]:
 
 
-def get_trajectory(fluid, v_fluid, particle, v_particle, is_gui=True):
+def get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=True):
     data_record = {}
     data_record["x_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
     data_record["v_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
     data_record["x_particle"] = -np.ones((n_steps, particle.shape[0], 2))
     data_record["v_particle"] = -np.ones((n_steps, particle.shape[0], 2))
+    data_record["grid_m"] = -np.ones((n_steps, n_grid, n_grid))
+    data_record["grid_v"] = -np.ones((n_steps, n_grid, n_grid, 2))
     data_record["n_part_fluid"] = fluid.shape[0]
     data_record["n_part_particle"] = particle.shape[0]
     if is_gui:
@@ -314,10 +316,12 @@ def get_trajectory(fluid, v_fluid, particle, v_particle, is_gui=True):
             # # canvas.circles(jelly, radius=radius, color=(0.93, 0.33, 0.23))
             canvas.circles(particle, radius=radius, color=(0, 0.5, 0.5))
             window.show()
-        data_record["x_fluid"][k][:fluid.shape[0]] = fluid.to_numpy()
-        data_record["v_fluid"][k][:fluid.shape[0]] = v_fluid.to_numpy()
-        data_record["x_particle"][k][:particle.shape[0]] = particle.to_numpy()
-        data_record["v_particle"][k][:particle.shape[0]] = v_particle.to_numpy()
+        data_record["x_fluid"][k] = fluid.to_numpy()
+        data_record["v_fluid"][k] = v_fluid.to_numpy()
+        data_record["x_particle"][k] = particle.to_numpy()
+        data_record["v_particle"][k] = v_particle.to_numpy()
+        data_record["grid_m"][k] = grid_m.to_numpy()
+        data_record["grid_v"][k] = grid_v.to_numpy()
         k += 1
         if k >= n_steps:
             break
@@ -384,7 +388,7 @@ max_n_part_fluid = 30000
 n_part_particle = 1000
 threshold = 0
 n_steps = 200
-is_particle = True
+is_particle = False
 is_gui = False
 n_simu = 500
 height = 0.25
@@ -443,7 +447,7 @@ for ll in range(n_simu):
     # x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, rect_shape, fluid_shape = reset_all(n_part_particle)
 
     # Get trajectory:
-    data_record = get_trajectory(fluid, v_fluid, particle, v_particle, is_gui=is_gui)
+    data_record = get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=is_gui)
     data_record["rect_shape"] = rect_shape
     data_record["fluid_shape"] = fluid_shape
 
