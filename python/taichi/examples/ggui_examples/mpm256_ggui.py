@@ -281,7 +281,7 @@ def remove_too_near(x_np, threshold, mode="simu"):
 # In[ ]:
 
 
-def get_trajectory(fluid, v_fluid, particle, v_particle):
+def get_trajectory(fluid, v_fluid, particle, v_particle, is_gui=True):
     data_record = {}
     data_record["x_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
     data_record["v_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
@@ -296,7 +296,8 @@ def get_trajectory(fluid, v_fluid, particle, v_particle):
         radius = 0.003
 
     gravity[None] = [0, -1]
-    for k in range(n_steps):
+    k = 0
+    while window.running:
         if is_gui:
             if window.get_event(ti.ui.PRESS):
                 if window.event.key == 'r':
@@ -317,7 +318,62 @@ def get_trajectory(fluid, v_fluid, particle, v_particle):
         data_record["v_fluid"][k][:fluid.shape[0]] = v_fluid.to_numpy()
         data_record["x_particle"][k][:particle.shape[0]] = particle.to_numpy()
         data_record["v_particle"][k][:particle.shape[0]] = v_particle.to_numpy()
+        k += 1
+        if k >= n_steps:
+            break
     return data_record
+
+
+# In[ ]:
+
+
+def reset_all(n_part_particle):
+    fluid_shape = sample_shape()
+    x_fluid = get_fluid(fluid_shape, n_part=max_n_part_fluid, height=height).astype(np.float32)
+    n_part_fluid = len(x_fluid)
+    rect_shape = sample_rect_shape()
+    x_particle = get_particles(rect_shape, n_part=n_part_particle).astype(np.float32)
+    print("fluid:", n_part_fluid)
+    print("part:", n_part_particle)
+
+    # # Remove too near:
+    if threshold > 0:
+        x_particle = remove_too_near(x_particle, threshold=threshold)
+        x_fluid = remove_too_near(x_fluid, threshold=threshold)
+        n_part_fluid = len(x_fluid)
+        print("fluid, after:", n_part_fluid)
+        n_part_particle = len(x_particle)
+        print("part, after:", n_part_particle)
+
+    if is_particle:
+        x_combine = np.concatenate([x_particle, x_fluid]).astype(np.float32)
+        n_particles = n_part_fluid + n_part_particle
+    else:
+        n_part_particle = 1
+        x_particle = np.array([[0.001, 0.001]]).astype(np.float32)
+        x_combine = np.concatenate([x_particle, x_fluid]).astype(np.float32)
+        n_particles = n_part_fluid + n_part_particle
+
+
+    x = ti.Vector.field(2, dtype=float, shape=n_particles)
+    x.from_numpy(x_combine)
+    fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
+    particle = ti.Vector.field(2, dtype=float, shape=n_part_particle)
+    fluid.from_numpy(x_fluid)
+    particle.from_numpy(x_particle)
+    v_fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
+    v_particle = ti.Vector.field(2, dtype=float, shape=n_part_particle)
+
+    # Initialize up other fields:
+    v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
+    C = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # affine velocity field
+    F = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # deformation gradient
+    material = ti.field(dtype=int, shape=n_particles)  # material id
+    Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
+
+    reset_other_fields(n_particles)
+
+    return x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, rect_shape, fluid_shape
 
 
 # In[ ]:
@@ -329,14 +385,14 @@ n_part_particle = 1000
 threshold = 0
 n_steps = 200
 is_particle = True
-is_gui = False
-n_simu = 500
+is_gui = True
+n_simu = 50
 height = 0.25
 
 
 for ll in range(n_simu):
     print(f"Simu: {ll}")
-    
+
     fluid_shape = sample_shape()
     x_fluid = get_fluid(fluid_shape, n_part=max_n_part_fluid, height=height).astype(np.float32)
     n_part_fluid = len(x_fluid)
@@ -384,13 +440,18 @@ for ll in range(n_simu):
     # Reset other fields:
     reset_other_fields(n_particles)
 
+    # x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, rect_shape, fluid_shape = reset_all(n_part_particle)
+
     # Get trajectory:
-    data_record = get_trajectory(fluid, v_fluid, particle, v_particle)
+    data_record = get_trajectory(fluid, v_fluid, particle, v_particle, is_gui=is_gui)
     data_record["rect_shape"] = rect_shape
     data_record["fluid_shape"] = fluid_shape
 
+    data_dirname = f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}"
     data_filename = data_dirname + "/sim_{:06d}.p".format(ll)
     make_dir(data_filename)
     pickle.dump(data_record, open(data_filename, "wb"))
+    del x, v, fluid, particle, v_fluid, v_particle, C, F, material, Jp, data_record
+    gc.collect()
     print()
 
