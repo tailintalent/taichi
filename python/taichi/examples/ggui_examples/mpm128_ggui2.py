@@ -13,9 +13,9 @@ arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
 
 quality = 1  # Use a larger value for higher-res simulations
-n_particles, n_grid = 9000 * quality**2, 128 * quality
+n_particles, n_grid = 9000 * quality**2, 256 * quality
 dx, inv_dx = 1 / n_grid, float(n_grid)
-dt = 1e-4 / quality
+dt = 5e-5 / quality
 p_vol, p_rho = (dx * 0.5)**2, 1
 p_mass = p_vol * p_rho
 E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
@@ -168,19 +168,21 @@ def render():
 
 
 def sample_shape():
-    y1 = np.random.rand()*0.15 + 0.05
-    y2 = np.random.rand()*0.15 + 0.05
+    y1 = np.random.rand()*0.05 + 0.01
+    y2 = np.random.rand()*0.05 + 0.35
+    if np.random.rand() > 0.5:
+        y1, y2 = y2, y1
     shape = [
         ((0, y1), (1, y2), 0),
     ]
     return shape
 
 
-def get_fluid(fluid_shape, n_part):
-    height = 0.2
+def get_fluid(fluid_shape, n_part, epsilon=1e-3):
+    height = 0.4
     x_np = np.stack([
-        np.random.rand(n_part) * 1,
-        np.random.rand(n_part) * height,
+        np.random.rand(n_part) * (1 - epsilon * 2) + epsilon,
+        np.random.rand(n_part) * height + epsilon,
     ], -1)
     lx = x_np[:, 0]
     ly = x_np[:, 1]
@@ -229,6 +231,36 @@ def plot_part(x):
     plt.show()
 
 
+def remove_too_near(x_np, threshold, mode="simu"):
+    def subfun(x_np):
+        dist = np.sqrt(((x_np[None] - x_np[:,None]) ** 2).sum(-1))
+        length = len(dist)
+        idx = np.arange(length)
+        dist[idx,idx] = 1
+        dist_min = dist.min(-1)
+        idx_sort = np.argsort(dist_min)
+        return dist_min, idx_sort
+    length = len(x_np)
+    if mode == "seq":
+        for i in range(length):
+            if i % 100 == 0:
+                print(i)
+            dist_min, idx_sort = subfun(x_np)
+            if dist_min[idx_sort[0]] < threshold:
+                mask = np.ones(len(x_np)).astype(bool)
+                mask[idx_sort[0]] = False
+                x_np = x_np[mask]
+            else:
+                break
+    elif mode == "simu":
+        dist_min, idx_sort = subfun(x_np)
+        mask = dist_min >= threshold
+        x_np = x_np[mask]
+    else:
+        raise
+    return x_np
+
+
 # In[ ]:
 
 
@@ -258,7 +290,7 @@ def reset_all():
 
     # Reset other fields:
     reset_other_fields(n_particles)
-    
+
     return x, v, C, F, material, Jp, fluid, particle, n_particles, n_part_fluid
 
 
@@ -266,17 +298,36 @@ def reset_all():
 
 
 gravity_amp = 1
-max_n_part_fluid = 300
-n_part_particle = 300
+max_n_part_fluid = 50000
+n_part_particle = 1000
+threshold = 0.001
+is_particle = True
 
 fluid_shape = sample_shape()
 x_fluid = get_fluid(fluid_shape, n_part=max_n_part_fluid).astype(np.float32)
 n_part_fluid = len(x_fluid)
-print(n_part_fluid)
 rect_shape = sample_rect_shape()
 x_particle = get_particles(rect_shape, n_part=n_part_particle).astype(np.float32)
-x_combine = np.concatenate([x_particle, x_fluid]).astype(np.float32)
-n_particles = n_part_fluid + n_part_particle
+print("fluid:", n_part_fluid)
+print("part:", n_part_particle)
+
+# # Remove too near:
+# x_particle = remove_too_near(x_particle, threshold=threshold)
+# x_fluid = remove_too_near(x_fluid, threshold=threshold)
+# n_part_fluid = len(x_fluid)
+# print("fluid, after:", n_part_fluid)
+# n_part_particle = len(x_particle)
+# print("part, after:", n_part_particle)
+
+if is_particle:
+    x_combine = np.concatenate([x_particle, x_fluid]).astype(np.float32)
+    n_particles = n_part_fluid + n_part_particle
+else:
+    n_part_particle = 1
+    x_particle = np.array([[0.001, 0.001]]).astype(np.float32)
+    x_combine = np.concatenate([x_particle, x_fluid]).astype(np.float32)
+    n_particles = n_part_fluid + n_part_particle
+    
 x = ti.Vector.field(2, dtype=float, shape=n_particles)
 x.from_numpy(x_combine)
 fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
@@ -335,11 +386,8 @@ def main(fluid, particle):
 
         for s in range(int(2e-3 // dt)):
             substep()
-        time.sleep(0.1)
         render()
         print(fluid.to_numpy()[0], particle.to_numpy()[0])
-        if count in [0, 1, 2]:
-            time.sleep(3)
         canvas.set_background_color((0.067, 0.184, 0.255))
         canvas.circles(fluid, radius=radius, color=(0, 0.5, 0.5))
         # # canvas.circles(jelly, radius=radius, color=(0.93, 0.33, 0.23))
