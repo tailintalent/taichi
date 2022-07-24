@@ -6,8 +6,9 @@
 
 import taichi as ti
 import numpy as np
-import time
 import pdb
+import pickle
+import time
 
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
@@ -163,8 +164,10 @@ def render():
     for i in range(n_particles):
         if i < n_part_particle:
             particle[i] = x[i]
+            v_particle[i] = v[i]
         else:
             fluid[i - n_part_particle] = x[i]
+            v_fluid[i - n_part_particle] = v[i]
 
 
 def sample_shape():
@@ -297,11 +300,19 @@ def reset_all():
 # In[ ]:
 
 
-gravity_amp = 1
+gravity_amp = 2
 max_n_part_fluid = 50000
 n_part_particle = 1000
 threshold = 0.001
+n_steps = 400
 is_particle = True
+is_gui = False
+
+data_record = {}
+data_record["x_fluid"] = -np.ones((n_steps, max_n_part_fluid, 2))
+data_record["v_fluid"] = -np.ones((n_steps, max_n_part_fluid, 2))
+data_record["x_particle"] = -np.ones((n_steps, n_part_particle if is_particle else 1, 2))
+data_record["v_particle"] = -np.ones((n_steps, n_part_particle if is_particle else 1, 2))
 
 fluid_shape = sample_shape()
 x_fluid = get_fluid(fluid_shape, n_part=max_n_part_fluid).astype(np.float32)
@@ -334,6 +345,8 @@ fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
 particle = ti.Vector.field(2, dtype=float, shape=n_part_particle)
 fluid.from_numpy(x_fluid)
 particle.from_numpy(x_particle)
+v_fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
+v_particle = ti.Vector.field(2, dtype=float, shape=n_part_particle)
 
 # Initialize up other fields:
 v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
@@ -350,50 +363,37 @@ def main(fluid, particle):
         "[Hint] Use WSAD/arrow keys to control gravity. Use left/right mouse buttons to attract/repel. Press R to reset."
     )
 
-    res = (512, 512)
-    window = ti.ui.Window("Taichi MLS-MPM-128", res=res, vsync=True)
-    canvas = window.get_canvas()
-    radius = 0.003
+    if is_gui:
+        res = (512, 512)
+        window = ti.ui.Window("Taichi MLS-MPM-128", res=res, vsync=True)
+        canvas = window.get_canvas()
+        radius = 0.003
 
     gravity[None] = [0, -1]
-    count = 0
-    while window.running:
-        if window.get_event(ti.ui.PRESS):
-            if window.event.key == 'r':
-                x, v, C, F, material, Jp, fluid, particle, n_particles, n_part_fluid = reset_all()
-            elif window.event.key in [ti.ui.ESCAPE]:
-                break
-        # if window.event is not None:
-        #     gravity[None] = [0, 0]  # if had any event
-        # if window.is_pressed(ti.ui.LEFT, 'a'):
-        #     gravity[None][0] = -1
-        # if window.is_pressed(ti.ui.RIGHT, 'd'):
-        #     gravity[None][0] = 1
-        # if window.is_pressed(ti.ui.UP, 'w'):
-        #     gravity[None][1] = 1
-        # if window.is_pressed(ti.ui.DOWN, 's'):
-        #     gravity[None][1] = -1
+    for k in range(n_steps):
+        if is_gui:
+            if window.get_event(ti.ui.PRESS):
+                if window.event.key == 'r':
+                    x, v, C, F, material, Jp, fluid, particle, n_particles, n_part_fluid = reset_all()
+                elif window.event.key in [ti.ui.ESCAPE]:
+                    break
         gravity[None][1] = -gravity_amp
-        # mouse = window.get_cursor_pos()
-        # mouse_circle[0] = ti.Vector([mouse[0], mouse[1]])
-        # canvas.circles(mouse_circle, color=(0.2, 0.4, 0.6), radius=0.05)
-        # attractor_pos[None] = [mouse[0], mouse[1]]
-        # attractor_strength[None] = 0
-        # if window.is_pressed(ti.ui.LMB):
-        #     attractor_strength[None] = 1
-        # if window.is_pressed(ti.ui.RMB):
-        #     attractor_strength[None] = -1
-
         for s in range(int(2e-3 // dt)):
             substep()
         render()
-        print(fluid.to_numpy()[0], particle.to_numpy()[0])
-        canvas.set_background_color((0.067, 0.184, 0.255))
-        canvas.circles(fluid, radius=radius, color=(0, 0.5, 0.5))
-        # # canvas.circles(jelly, radius=radius, color=(0.93, 0.33, 0.23))
-        canvas.circles(particle, radius=radius, color=(0, 0.5, 0.5))
-        window.show()
-        count += 1
+        if is_gui:
+            canvas.set_background_color((0.067, 0.184, 0.255))
+            canvas.circles(fluid, radius=radius, color=(0, 0.5, 0.5))
+            # # canvas.circles(jelly, radius=radius, color=(0.93, 0.33, 0.23))
+            canvas.circles(particle, radius=radius, color=(0, 0.5, 0.5))
+            window.show()
+        data_record["x_fluid"][k][:fluid.shape[0]] = fluid.to_numpy()
+        data_record["v_fluid"][k][:fluid.shape[0]] = v_fluid.to_numpy()
+        data_record["x_particle"][k][:particle.shape[0]] = particle.to_numpy()
+        data_record["v_particle"][k][:particle.shape[0]] = v_particle.to_numpy()
+
+        if k % 100 == 0:
+            print(f"Step: {k}")
 
 
 # In[ ]:
@@ -401,4 +401,5 @@ def main(fluid, particle):
 
 if __name__ == '__main__':
     main(fluid, particle)
+    pickle.dump(data_record, open("data_record.p", "wb"))
 
