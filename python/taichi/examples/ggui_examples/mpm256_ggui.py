@@ -297,7 +297,7 @@ def get_trajectory(fluid, v_fluid, particle, v_particle, is_gui=True):
 
     gravity[None] = [0, -1]
     k = 0
-    while window.running:
+    while True:
         if is_gui:
             if window.get_event(ti.ui.PRESS):
                 if window.event.key == 'r':
@@ -385,8 +385,8 @@ n_part_particle = 1000
 threshold = 0
 n_steps = 200
 is_particle = True
-is_gui = True
-n_simu = 50
+is_gui = False
+n_simu = 500
 height = 0.25
 
 
