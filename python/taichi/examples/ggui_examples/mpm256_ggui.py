@@ -10,12 +10,89 @@ import pdb
 import pickle
 import taichi as ti
 import time
+import argparse
 
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
 
+
+# In[ ]:
+
+
+def arg_parse():
+    def str2bool(v):
+        """used for argparse, 'type=str2bool', so that can pass in string True or False."""
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ('true'):
+            return True
+        elif v.lower() in ('false'):
+            return False
+        else:
+            raise argparse.ArgumentTypeError('Boolean value expected.')
+
+    parser = argparse.ArgumentParser(description='Taichi argparse.')
+    # Experiment management:
+    parser.add_argument('--gravity_amp', type=float,
+                        help='Gravity amplitude')
+    parser.add_argument('--max_n_part_fluid', type=int,
+                        help='Maximum number of fluid particles')
+    parser.add_argument('--n_part_particle', type=int,
+                        help='Number of particles')
+    parser.add_argument('--n_grid', type=int,
+                        help='Grid size. E.g. --n_grid=256 means the 2D space is 256x256.')
+    parser.add_argument('--n_steps', type=int,
+                        help='Number of simulation steps')
+    parser.add_argument('--is_particle', type=str2bool, nargs='?', const=True, default=True,
+                        help="If True, will include particle")
+    parser.add_argument('--is_gui', type=str2bool, nargs='?', const=True, default=False,
+                        help='If True, will use GUI.')
+    parser.add_argument('--n_simu', type=int,
+                        help='Number of trajectories')
+    parser.add_argument('--height', type=float,
+                        help='Maximum height of the fluid.')
+
+    parser.set_defaults(
+        gravity_amp=2,
+        max_n_part_fluid=30000,
+        n_part_particle=1000,
+        n_grid=256,
+        n_steps=200,
+        is_particle=True,
+        is_gui=False,
+        n_simu=500,
+        height=0.25,
+    )
+    try:
+        get_ipython().run_line_magic('matplotlib', 'inline')
+        args = parser.parse_args([])
+    except:
+        args = parser.parse_args()
+    return args
+
+args = arg_parse()
+try:
+    get_ipython().run_line_magic('matplotlib', 'inline')
+    is_jupyter = True
+except:
+    is_jupyter = False
+
+gravity_amp = args.gravity_amp
+max_n_part_fluid = args.max_n_part_fluid
+n_part_particle = args.n_part_particle
+n_grid = args.n_grid
+n_steps = args.n_steps
+is_particle = args.is_particle
+is_gui = args.is_gui
+n_simu = args.n_simu
+height = args.height
+
+
+# In[ ]:
+
+
 quality = 1  # Use a larger value for higher-res simulations
-n_particles, n_grid = 9000 * quality**2, 256 * quality
+n_particles, n_grid = 9000 * quality**2, n_grid * quality
 dx, inv_dx = 1 / n_grid, float(n_grid)
 dt = 5e-5 / quality
 p_vol, p_rho = (dx * 0.5)**2, 1
@@ -383,16 +460,7 @@ def reset_all(n_part_particle):
 # In[ ]:
 
 
-gravity_amp = 2
-max_n_part_fluid = 30000
-n_part_particle = 1000
 threshold = 0
-n_steps = 200
-is_particle = False
-is_gui = False
-n_simu = 500
-height = 0.25
-
 
 for ll in range(n_simu):
     print(f"Simu: {ll}")
