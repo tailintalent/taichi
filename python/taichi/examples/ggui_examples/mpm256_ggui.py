@@ -51,6 +51,8 @@ def arg_parse():
                         help='Number of trajectories')
     parser.add_argument('--height', type=float,
                         help='Maximum height of the fluid.')
+    parser.add_argument('--is_save', type=str2bool, nargs='?', const=True, default=True,
+                        help='If True, will use GUI.')
 
     parser.set_defaults(
         gravity_amp=2,
@@ -62,6 +64,7 @@ def arg_parse():
         is_gui=False,
         n_simu=500,
         height=0.25,
+        is_save=True,
     )
     try:
         get_ipython().run_line_magic('matplotlib', 'inline')
@@ -519,10 +522,11 @@ for ll in range(n_simu):
     data_record["rect_shape"] = rect_shape
     data_record["fluid_shape"] = fluid_shape
 
-    data_dirname = f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}"
-    data_filename = data_dirname + "/sim_{:06d}.p".format(ll)
-    make_dir(data_filename)
-    pickle.dump(data_record, open(data_filename, "wb"))
+    if args.is_save:
+        data_dirname = f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}"
+        data_filename = data_dirname + "/sim_{:06d}.p".format(ll)
+        make_dir(data_filename)
+        pickle.dump(data_record, open(data_filename, "wb"))
     del x, v, fluid, particle, v_fluid, v_particle, C, F, material, Jp, data_record
     gc.collect()
     print()
