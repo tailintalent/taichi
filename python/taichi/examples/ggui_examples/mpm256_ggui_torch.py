@@ -7,13 +7,17 @@
 import gc
 import numpy as np
 import pdb
-import pickle
 import taichi as ti
+import pickle
+from numbers import Number
+import os, sys
 import time
+import torch
+from torch.autograd import Variable
+import torch.nn.functional as F
 import argparse
 
-arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
-ti.init(arch=arch)
+device = "cuda:8"
 
 
 # In[ ]:
@@ -77,6 +81,8 @@ args = arg_parse()
 try:
     get_ipython().run_line_magic('matplotlib', 'inline')
     is_jupyter = True
+    sys.path.append(os.path.join(os.path.dirname("__file__"), '..', '..', '..', '..', '..', '..'))
+    from plasma.pytorch_net.util import plot_matrices
 except:
     is_jupyter = False
 
@@ -104,26 +110,26 @@ E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
 mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
     (1 + nu) * (1 - 2 * nu))  # Lame parameters
 
-x = ti.Vector.field(2, dtype=float, shape=n_particles)  # position
-v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
-C = ti.Matrix.field(2, 2, dtype=float,
-                    shape=n_particles)  # affine velocity field
-F = ti.Matrix.field(2, 2, dtype=float,
-                    shape=n_particles)  # deformation gradient
-material = ti.field(dtype=int, shape=n_particles)  # material id
-Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
-grid_v = ti.Vector.field(2, dtype=float,
-                         shape=(n_grid, n_grid))  # grid node momentum/velocity
-grid_m = ti.field(dtype=float, shape=(n_grid, n_grid))  # grid node mass
-gravity = ti.Vector.field(2, dtype=float, shape=())
-attractor_strength = ti.field(dtype=float, shape=())
-attractor_pos = ti.Vector.field(2, dtype=float, shape=())
+# x = ti.Vector.field(2, dtype=float, shape=n_particles)  # position
+# v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
+# C = ti.Matrix.field(2, 2, dtype=float,
+#                     shape=n_particles)  # affine velocity field
+# F = ti.Matrix.field(2, 2, dtype=float,
+#                     shape=n_particles)  # deformation gradient
+# material = ti.field(dtype=int, shape=n_particles)  # material id
+# Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
 
-group_size = n_particles // 2
-water = ti.Vector.field(2, dtype=float, shape=group_size)  # position
-jelly = ti.Vector.field(2, dtype=float, shape=group_size)  # position
-snow = ti.Vector.field(2, dtype=float, shape=group_size)  # position
-mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
+grid_v = torch.zeros(n_grid, n_grid, 2, device=device)  # grid node momentum/velocity
+grid_m = torch.zeros(n_grid, n_grid, device=device)  # grid node mass
+gravity = torch.zeros(2, device=device)
+attractor_strength = torch.tensor(0., device=device)
+attractor_pos = torch.zeros(2, device=device)
+
+# group_size = n_particles // 2
+# water = ti.Vector.field(2, dtype=float, shape=group_size)  # position
+# jelly = ti.Vector.field(2, dtype=float, shape=group_size)  # position
+# snow = ti.Vector.field(2, dtype=float, shape=group_size)  # position
+# mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
 
 
 # In[ ]:
@@ -131,10 +137,20 @@ mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
 
 @ti.kernel
 def substep():
-    for i, j in grid_m:
-        # gri_v & grid_m: [n_grd, n_grid]
-        grid_v[i, j] = [0, 0]
-        grid_m[i, j] = 0
+    # for i, j in grid_m:
+    #     # gri_v & grid_m: [n_grd, n_grid]
+    #     grid_v[i, j] = [0, 0]
+    #     grid_m[i, j] = 0
+    grid_v.fill_(0)
+    grid_m.fill_(0)
+
+    base = (x * inv_dx - 0.5).long()  # [n_particles] index of the grid
+    fx = x * inv_dx - base   # [n_particles] location in the grid
+    # Quadratic kernels  [http://mpm.graphics   Eqn. 123, with x=fx, fx-1,fx-2]
+    w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]  # [n_particles] 
+    F = (torch.eye(2)[None].expand(n_particles,2,2) + C * dt) @ F
+    
+    
     for p in x:  # x: [n_particles] Particle state update and scatter to grid (P2G)
         base = (x[p] * inv_dx - 0.5).cast(int)  # index of the grid
         fx = x[p] * inv_dx - base.cast(float)   # location in the grid
@@ -230,25 +246,32 @@ def reset():
         C[i] = ti.Matrix.zero(float, 2, 2)
 
 
-@ti.kernel
+# @ti.kernel
 def reset_other_fields(n_particles: int):
-    for i in range(n_particles):
-        material[i] = 0  # 0: fluid 1: jelly 2: snow
-        v[i] = [0, 0]
-        F[i] = ti.Matrix([[1, 0], [0, 1]])
-        Jp[i] = 1
-        C[i] = ti.Matrix.zero(float, 2, 2)
+    material = torch.zeros(n_particles, device=device)
+    v = torch.zeros(n_particles, 2, device=device)
+    F = torch.tensor([[1, 0], [0, 1]], device=device, dtype=torch.float32)[None].expand(n_particles, 2, 2)
+    Jp = torch.ones(n_particles, device=device)
+    C = torch.zeros(n_particles, 2, 2, device=device)
+    return v, C, F, material, Jp
 
 
-@ti.kernel
-def render():
-    for i in range(n_particles):
-        if i < n_part_particle:
-            particle[i] = x[i]
-            v_particle[i] = v[i]
-        else:
-            fluid[i - n_part_particle] = x[i]
-            v_fluid[i - n_part_particle] = v[i]
+# @ti.kernel
+# def render():
+#     for i in range(n_particles):
+#         if i < n_part_particle:
+#             particle_ti[i] = x[i]
+#             v_particle_ti[i] = v[i]
+#         else:
+#             fluid_ti[i - n_part_particle] = x[i]
+#             v_fluid_ti[i - n_part_particle] = v[i]
+
+def render(x, v, n_part_particle):
+    particle = x[:n_part_particle]
+    v_particle = v[:n_part_particle]
+    fluid = x[n_part_particle:]
+    v_fluid = v[n_part_particle:]
+    return particle, v_particle, fluid, v_fluid
 
 
 def sample_shape():
@@ -358,10 +381,147 @@ def remove_too_near(x_np, threshold, mode="simu"):
     return x_np
 
 
+def expand_grid(grid, length):
+    if len(grid.shape) == 3:
+        n_features = grid.shape[-1]
+        grid_expand = torch.cat([torch.cat([grid, torch.zeros(n_grid,length,n_features, device=device)], 1), torch.zeros(length,n_grid+length,n_features, device=device)], 0)
+    elif len(grid.shape) == 2:
+        grid_expand = torch.cat([torch.cat([grid, torch.zeros(n_grid,length, device=device)], 1), torch.zeros(length,n_grid+length, device=device)], 0)
+    else:
+        raise
+    return grid_expand
+
+
+def shrink_grid(grid, length):
+    return grid[:-length, :-length]
+
+def to_np_array(*arrays, **kwargs):
+    array_list = []
+    for array in arrays:
+        if array is None:
+            array_list.append(array)
+            continue
+        if isinstance(array, Variable):
+            if array.is_cuda:
+                array = array.cpu()
+            array = array.data
+        if isinstance(array, torch.Tensor) or isinstance(array, torch.FloatTensor) or isinstance(array, torch.LongTensor) or isinstance(array, torch.ByteTensor) or            isinstance(array, torch.cuda.FloatTensor) or isinstance(array, torch.cuda.LongTensor) or isinstance(array, torch.cuda.ByteTensor):
+            if array.is_cuda:
+                array = array.cpu()
+            array = array.numpy()
+        if isinstance(array, Number):
+            pass
+        elif isinstance(array, list) or isinstance(array, tuple):
+            array = np.array(array)
+        elif array.shape == (1,):
+            if "full_reduce" in kwargs and kwargs["full_reduce"] is False:
+                pass
+            else:
+                array = array[0]
+        elif array.shape == ():
+            array = array.tolist()
+        array_list.append(array)
+    if len(array_list) == 1:
+        if not ("keep_list" in kwargs and kwargs["keep_list"]):
+            array_list = array_list[0]
+    return array_list
+
+
 # In[ ]:
 
 
-def get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=True):
+def substep_torch(x, v, C, F, Jp):
+    grid_v = torch.zeros(n_grid, n_grid, 2, device=device)  # grid node momentum/velocity
+    grid_m = torch.zeros(n_grid, n_grid, device=device)  # grid node mass
+
+    base = (x * inv_dx - 0.5).long()  # [n_particles] index of the grid
+    fx = x * inv_dx - base   # [n_particles] location in the grid
+    # Quadratic kernels  [http://mpm.graphics   Eqn. 123, with x=fx, fx-1,fx-2]
+    w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1)**2, 0.5 * (fx - 0.5)**2]  # [n_particles] 
+    F = (torch.eye(2, device=device)[None].expand(n_particles,2,2) + C * dt) @ F
+    # Hardening coefficient: snow gets harder when compressed
+    h = torch.maximum(torch.tensor(0.1), torch.minimum(torch.tensor(5), torch.exp(10 * (1.0 - Jp))))  #   Jp: [n_particles], plastic deformation
+    h[material==2] = 0.3
+    mu, la = mu_0 * h, lambda_0 * h
+    mask_material_0 = material==0
+    mask_material_1 = material==1
+    length = len(F)
+    mu[mask_material_0] = 0.  # liquid
+
+    U, sig, V = torch.svd(F)
+    J = 1.0
+    for ii in range(2):
+        new_sig = sig[:, ii]
+        new_sig[mask_material_1] = torch.minimum(torch.maximum(sig[mask_material_1, ii], torch.tensor(1 - 2.5e-2)), torch.tensor(1 + 4.5e-3))  # Plasticity
+        Jp = Jp * sig[:, ii] / new_sig
+        sig[:, ii] = new_sig
+        J = J * new_sig
+    F[mask_material_0] = torch.eye(2, device=device)[None].expand(len(mask_material_0),2,2).to(device) * J[:,None,None].sqrt()
+    sig_matrix = torch.eye(2, device=device)[None].expand(length,2,2) * sig[...,None]
+    F[mask_material_1] = U[mask_material_1] @ sig_matrix[mask_material_1] @ V[mask_material_1].transpose(1,2)
+
+    stress = 2 * mu[:,None,None] * (F - U @ V.transpose(1,2)) @ F.transpose(1,2
+            ) + torch.eye(2, device=device)[None].expand(length,2,2) * (la * J * (J - 1))[:,None,None]
+    stress = (-dt * p_vol * 4 * inv_dx * inv_dx) * stress
+    affine = stress + p_mass * C
+
+    # Deposition onto grid:
+    # Loop over 3x3 grid node neighborhood
+    grid_v_expand = expand_grid(grid_v, length=2)
+    grid_m_expand = expand_grid(grid_m, length=2)
+    for i in range(3):
+        for j in range(3):
+            offset = torch.tensor([i, j], device=device, dtype=torch.float32)
+            dpos = (offset - fx) * dx
+            weight = w[i][:,0] * w[j][:,1]
+            base_core = base + offset.long()
+            grid_v_expand[base_core[:,0],base_core[:,1]] += weight[:,None] * (p_mass * v + (affine @ dpos[:,:,None]).squeeze(-1))
+            grid_m_expand[base_core[:,0],base_core[:,1]] += weight * p_mass
+
+    grid_v = shrink_grid(grid_v_expand, length=2)
+    grid_m = shrink_grid(grid_m_expand, length=2)
+
+    # Boundary condition:
+    rows, cols = torch.where(grid_m>0)  # No need for epsilon here
+    grid_v[rows,cols] = (1 / grid_m[rows,cols][...,None]) * grid_v[rows,cols]  # Momentum to velocity
+    grid_v[rows,cols] += dt * gravity[None] * 30  # gravity
+    mask_i0 = grid_v[:,:,0] < 0 & torch.cat([torch.ones(3, n_grid, device=device), torch.zeros(n_grid-3, n_grid, device=device)], 0).bool()
+    mask_i1 = grid_v[:,:,0] > 0 & torch.cat([torch.zeros(n_grid-3, n_grid, device=device), torch.ones(3, n_grid, device=device)], 0).bool()
+    mask_i  = mask_i0 | mask_i1
+    grid_v[...,0].masked_fill_(mask_i, 0)
+    mask_j0 = grid_v[:,:,1] < 0 & torch.cat([torch.ones(n_grid, 3, device=device), torch.zeros(n_grid, n_grid-3, device=device)], 1).bool()
+    mask_j1 = grid_v[:,:,1] > 0 & torch.cat([torch.zeros(n_grid, n_grid-3, device=device), torch.ones(n_grid, 3, device=device)], 1).bool()
+    mask_j  = mask_j0 | mask_j1
+    grid_v[...,1].masked_fill_(mask_j, 0)
+
+    # Grid to particle (G2P)
+    base = (x * inv_dx - 0.5).long()
+    fx = x * inv_dx - base.float()
+    w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1.0)**2, 0.5 * (fx - 0.5)**2]
+    new_v = torch.zeros(length, 2, device=device)
+    new_C = torch.zeros(length, 2, 2, device=device)
+    grid_v_expand = expand_grid(grid_v, length=2)
+    for i in range(3):
+        for j in range(3):
+            dpos = torch.tensor([i, j], device=device).float() - fx
+            base_core = base + torch.tensor([i, j], device=device)
+            g_v = grid_v_expand[base_core[:,0],base_core[:,1]]
+            weight = w[i][:,0] * w[j][:,1]
+            new_v += weight[...,None] * g_v
+            new_C += 4 * inv_dx * weight[:,None,None] * torch.einsum("bi,bj->bij", g_v, dpos)
+    v, C = new_v, new_C
+    x += dt * v
+    return x, v, C, F, Jp, grid_m, grid_v
+
+
+# In[ ]:
+
+
+def get_trajectory(x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_particles, is_gui=True):
+    # Reset other fields:
+    v, C, F, material, Jp = reset_other_fields(n_particles)
+
+    # Initialize data_record:
     data_record = {}
     data_record["x_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
     data_record["v_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
@@ -377,7 +537,7 @@ def get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=
         canvas = window.get_canvas()
         radius = 0.003
 
-    gravity[None] = [0, -1]
+    gravity = torch.FloatTensor([0, -1])
     k = 0
     while True:
         if is_gui:
@@ -386,23 +546,25 @@ def get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=
                     x, v, C, F, material, Jp, fluid, particle, n_particles, n_part_fluid = reset_all()
                 elif window.event.key in [ti.ui.ESCAPE]:
                     break
-        gravity[None][1] = -gravity_amp
+        gravity[1] = -gravity_amp
         for s in range(int(2e-3 // dt)):
-            substep()
-        render()
+            x, v, C, F, Jp, grid_m, grid_v = substep_torch(x, v, C, F, Jp)
+        particle, v_particle, fluid, v_fluid = render(x, v, n_part_particle)
         if is_gui:
             canvas.set_background_color((0.067, 0.184, 0.255))
-            canvas.circles(fluid, radius=radius, color=(0, 0.5, 0.5))
+            canvas.circles(fluid_ti, radius=radius, color=(0, 0.5, 0.5))
             # # canvas.circles(jelly, radius=radius, color=(0.93, 0.33, 0.23))
-            canvas.circles(particle, radius=radius, color=(0, 0.5, 0.5))
+            canvas.circles(particle_ti, radius=radius, color=(0, 0.5, 0.5))
             window.show()
-        data_record["x_fluid"][k] = fluid.to_numpy()
-        data_record["v_fluid"][k] = v_fluid.to_numpy()
-        data_record["x_particle"][k] = particle.to_numpy()
-        data_record["v_particle"][k] = v_particle.to_numpy()
-        data_record["grid_m"][k] = grid_m.to_numpy()
-        data_record["grid_v"][k] = grid_v.to_numpy()
+        data_record["x_fluid"][k] = to_np_array(fluid)
+        data_record["v_fluid"][k] = to_np_array(v_fluid)
+        data_record["x_particle"][k] = to_np_array(particle)
+        data_record["v_particle"][k] = to_np_array(v_particle)
+        data_record["grid_m"][k] = to_np_array(grid_m)
+        data_record["grid_v"][k] = to_np_array(grid_v)
         k += 1
+        if k % 10 == 0:
+            print(k)
         if k >= n_steps:
             break
     return data_record
@@ -496,29 +658,27 @@ for ll in range(n_simu):
 
     data_dirname = f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{n_part_particle}_g_{gravity_amp}_thresh_{threshold}"
 
-    x = ti.Vector.field(2, dtype=float, shape=n_particles)
-    x.from_numpy(x_combine)
-    fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
-    particle = ti.Vector.field(2, dtype=float, shape=n_part_particle)
-    fluid.from_numpy(x_fluid)
-    particle.from_numpy(x_particle)
-    v_fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
-    v_particle = ti.Vector.field(2, dtype=float, shape=n_part_particle)
+    # fluid_ti = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
+    # particle_ti = ti.Vector.field(2, dtype=float, shape=n_part_particle)
+    # v_fluid_ti = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
+    # v_particle_ti = ti.Vector.field(2, dtype=float, shape=n_part_particle)
+
+    x = torch.tensor(x_combine, device=device, dtype=torch.float32)
+    fluid = torch.tensor(x_fluid, device=device, dtype=torch.float32)
+    particle = torch.tensor(x_particle, device=device, dtype=torch.float32)
+    v_fluid = torch.zeros(n_part_fluid, 2, device=device)
+    v_particle = torch.zeros(n_part_particle, 2, device=device)
 
     # Initialize up other fields:
-    v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
-    C = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # affine velocity field
-    F = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # deformation gradient
-    material = ti.field(dtype=int, shape=n_particles)  # material id
-    Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
-
-    # Reset other fields:
-    reset_other_fields(n_particles)
-
-    # x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, rect_shape, fluid_shape = reset_all(n_part_particle)
+    v = torch.zeros(n_particles, 2, device=device)  # velocity
+    C = torch.zeros(n_particles, 2, 2, device=device)  # affine velocity field
+    F = torch.zeros(n_particles, 2, 2, device=device)  # deformation gradient
+    material = torch.zeros(n_particles, device=device).long()  # material id
+    Jp = torch.zeros(n_particles, device=device)  # plastic deformation
 
     # Get trajectory:
-    data_record = get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=is_gui)
+    data_record = get_trajectory(
+        x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_particles, is_gui=is_gui)
     data_record["rect_shape"] = rect_shape
     data_record["fluid_shape"] = fluid_shape
 
