@@ -188,7 +188,6 @@ def substep2():
 
 @ti.kernel
 def substep3():
-    # pickle.dump(grid_v.to_torch(), open("aha.p", "wb"))
     for p in x:  # grid to particle (G2P)
         base = (x[p] * inv_dx - 0.5).cast(int)
         fx = x[p] * inv_dx - base.cast(float)

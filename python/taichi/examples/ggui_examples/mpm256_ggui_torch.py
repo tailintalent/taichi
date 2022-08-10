@@ -465,7 +465,7 @@ def to_np_array(*arrays, **kwargs):
 # In[ ]:
 
 
-def substep_torch(x, v, C, F, Jp, gravity, epsilon=1e-6):
+def substep_torch1(x, v, C, F, Jp, gravity, epsilon=1e-6):
     grid_v = torch.zeros(n_grid, n_grid, 2, device=device, dtype=torch.float64)  # grid node momentum/velocity
     grid_m = torch.zeros(n_grid, n_grid, device=device, dtype=torch.float64)  # grid node mass
 
@@ -519,7 +519,10 @@ def substep_torch(x, v, C, F, Jp, gravity, epsilon=1e-6):
 
     grid_v = shrink_grid(grid_v_expand, length=2)
     grid_m = shrink_grid(grid_m_expand, length=2)
+    return x, v, C, F, Jp, grid_m, grid_v
 
+    
+def substep_torch2(x, v, C, F, Jp, grid_m, grid_v, gravity, epsilon=1e-6):
     # Boundary condition:
     rows, cols = torch.where(grid_m>epsilon)  # No need for epsilon here
     grid_v[rows,cols] = (1 / grid_m[rows,cols][...,None]) * grid_v[rows,cols]  # Momentum to velocity
@@ -533,8 +536,12 @@ def substep_torch(x, v, C, F, Jp, gravity, epsilon=1e-6):
     mask_j1 = (grid_v[:,:,1] > 0) & torch.cat([torch.zeros(n_grid, n_grid-3, device=device, dtype=torch.float64), torch.ones(n_grid, 3, device=device, dtype=torch.float64)], 1).bool()
     mask_j  = mask_mg0 & (mask_j0 | mask_j1)
     grid_v[...,1].masked_fill_(mask_j, 0)
+    return x, v, C, F, Jp, grid_m, grid_v
 
+
+def substep_torch3(x, v, C, F, Jp, grid_m, grid_v, gravity, epsilon=1e-6):
     # Grid to particle (G2P)
+    length = len(F)
     base = (x * inv_dx - 0.5).long()
     fx = x * inv_dx - base.double()
     w = [0.5 * (1.5 - fx)**2, 0.75 - (fx - 1.0)**2, 0.5 * (fx - 0.5)**2]
@@ -592,7 +599,9 @@ def get_trajectory(x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_pa
                     break
         gravity[1] = -gravity_amp
         for s in range(int(2e-3 // dt)):
-            x, v, C, F, Jp, grid_m, grid_v = substep_torch(x, v, C, F, Jp, gravity, epsilon=epsilon)
+            x, v, C, F, Jp, grid_m, grid_v = substep_torch1(x, v, C, F, Jp, gravity, epsilon=epsilon)
+            x, v, C, F, Jp, grid_m, grid_v = substep_torch2(x, v, C, F, Jp, grid_m, grid_v, gravity, epsilon=epsilon)
+            x, v, C, F, Jp, grid_m, grid_v = substep_torch3(x, v, C, F, Jp, grid_m, grid_v, gravity, epsilon=epsilon)
         particle, v_particle, fluid, v_fluid = render(x, v, n_part_particle)
         if is_gui:
             fluid_ti.from_numpy(fluid)
