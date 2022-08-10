@@ -55,6 +55,8 @@ def arg_parse():
                         help='GPU ID.')
     parser.add_argument('--traj_path', type=str,
                         help='trajectory path')
+    parser.add_argument('--seed', type=int,
+                        help='random seed.')
 
     parser.set_defaults(
         gravity_amp=2,
@@ -68,7 +70,8 @@ def arg_parse():
         height=0.25,
         is_save=True,
         gpuid="0",
-        traj_path="/dfs/project/plasma/taichi_new/"
+        traj_path="/dfs/project/plasma/taichi_test/",
+        seed=1,
     )
     try:
         get_ipython().run_line_magic('matplotlib', 'inline')
@@ -76,6 +79,21 @@ def arg_parse():
     except:
         args = parser.parse_args()
     return args
+
+
+def set_seed(seed):
+    """Set up seed."""
+    import numpy as np
+    import torch
+    import random
+    if seed == -1:
+        seed = None
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        random.seed(seed)
+
 
 args = arg_parse()
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda if args.gpuid != "False" else ti.cpu
@@ -101,7 +119,7 @@ height = args.height
 
 
 @ti.kernel
-def substep():
+def substep1():
     for i, j in grid_m:
         # gri_v & grid_m: [n_grd, n_grid]
         grid_v[i, j] = [0, 0]
@@ -147,6 +165,9 @@ def substep():
             weight = w[i][0] * w[j][1]
             grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
             grid_m[base + offset] += weight * p_mass
+
+@ti.kernel
+def substep2():
     for i, j in grid_m:
         if grid_m[i, j] > 0:  # No need for epsilon here
             grid_v[i,
@@ -166,7 +187,7 @@ def substep():
                 grid_v[i, j][1] = 0
 
 @ti.kernel
-def substep2():
+def substep3():
     # pickle.dump(grid_v.to_torch(), open("aha.p", "wb"))
     for p in x:  # grid to particle (G2P)
         base = (x[p] * inv_dx - 0.5).cast(int)
@@ -363,9 +384,10 @@ def get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=
                     break
         gravity[None][1] = -gravity_amp
         for s in range(int(2e-3 // dt)):
-            substep()
+            substep1()
             # print(grid_v)
             substep2()
+            substep3()
         render()
         if is_gui:
             canvas.set_background_color((0.067, 0.184, 0.255))
@@ -441,6 +463,7 @@ def reset_all(n_part_particle):
 
 
 threshold = 0
+set_seed(args.seed)
 
 for ll in range(n_simu):
     ti.init(arch=arch)

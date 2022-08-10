@@ -63,6 +63,8 @@ def arg_parse():
                         help='GPU ID.')
     parser.add_argument('--is_save', type=str2bool, nargs='?', const=True, default=True,
                         help='If True, will use GUI.')
+    parser.add_argument('--seed', type=int,
+                        help='random seed.')
 
     parser.set_defaults(
         gravity_amp=2,
@@ -77,6 +79,7 @@ def arg_parse():
         height=0.25,
         is_save=True,
         gpuid="0",
+        seed=1,
     )
     try:
         get_ipython().run_line_magic('matplotlib', 'inline')
@@ -84,6 +87,20 @@ def arg_parse():
     except:
         args = parser.parse_args()
     return args
+
+def set_seed(seed):
+    """Set up seed."""
+    import numpy as np
+    import torch
+    import random
+    if seed == -1:
+        seed = None
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        random.seed(seed)
+
 
 args = arg_parse()
 try:
@@ -605,6 +622,7 @@ def get_trajectory(x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_pa
 
 
 threshold = 0
+set_seed(args.seed)
 
 for ll in range(n_simu):
     print(f"Simu: {ll}")
