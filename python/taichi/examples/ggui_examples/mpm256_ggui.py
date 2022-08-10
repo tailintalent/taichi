@@ -3,7 +3,7 @@
 
 # In[ ]:
 
-
+from copy import deepcopy
 import os
 import gc
 import numpy as np
@@ -57,6 +57,8 @@ def arg_parse():
                         help='trajectory path')
     parser.add_argument('--seed', type=int,
                         help='random seed.')
+    parser.add_argument('--record_path', type=str,
+                        help='Record path')
 
     parser.set_defaults(
         gravity_amp=2,
@@ -72,6 +74,7 @@ def arg_parse():
         gpuid="0",
         traj_path="/dfs/project/plasma/taichi_test/",
         seed=1,
+        record_path="None",
     )
     try:
         get_ipython().run_line_magic('matplotlib', 'inline')
@@ -93,6 +96,49 @@ def set_seed(seed):
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         random.seed(seed)
+
+
+def pdump(file, filename):
+    """Dump a file via pickle."""
+    with open(filename, "wb") as f:
+        pickle.dump(file, f)
+
+
+def pload(filename):
+    """Load a filename saved as pickle."""
+    with open(filename, "rb") as f:
+        file = pickle.load(f)
+    return file
+
+
+def clear_dir(dirname):
+    import os
+    import glob
+    files = glob.glob(dirname)
+    for f in files:
+        os.remove(f)
+
+
+def record_data(data_record_dict, data_list, key_list, nolist=False, ignore_duplicate=False, recent_record=-1):
+    """Record data to the dictionary data_record_dict. It records each key: value pair in the corresponding location of 
+    key_list and data_list into the dictionary."""
+    if not isinstance(data_list, list):
+        data_list = [data_list]
+    if not isinstance(key_list, list):
+        key_list = [key_list]
+    assert len(data_list) == len(key_list), "the data_list and key_list should have the same length!"
+    for data, key in zip(data_list, key_list):
+        if nolist:
+            data_record_dict[key] = data
+        else:
+            if key not in data_record_dict:
+                data_record_dict[key] = [data]
+            else: 
+                if (not ignore_duplicate) or (data not in data_record_dict[key]):
+                    data_record_dict[key].append(data)
+            if recent_record != -1:
+                # Only keep the most recent records
+                data_record_dict[key] = data_record_dict[key][-recent_record:]
 
 
 args = arg_parse()
@@ -356,7 +402,7 @@ def remove_too_near(x_np, threshold, mode="simu"):
 # In[ ]:
 
 
-def get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=True):
+def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=True, record_path="None"):
     data_record = {}
     data_record["x_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
     data_record["v_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
@@ -384,9 +430,21 @@ def get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=
         gravity[None][1] = -gravity_amp
         for s in range(int(2e-3 // dt)):
             substep1()
-            # print(grid_v)
+            if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep1.p"):
+                record_dict = {}
+                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                make_dir(record_path + "/mpm256_ori/test")
+                pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep1.p")
             substep2()
+            if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep2.p"):
+                record_dict = {}
+                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep2.p")
             substep3()
+            if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep3.p"):
+                record_dict = {}
+                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep3.p")
         render()
         if is_gui:
             canvas.set_background_color((0.067, 0.184, 0.255))
@@ -463,6 +521,8 @@ def reset_all(n_part_particle):
 
 threshold = 0
 set_seed(args.seed)
+if args.record_path != "None":
+    clear_dir(args.record_path + "/mpm256_ori/*")
 
 for ll in range(n_simu):
     ti.init(arch=arch)
@@ -551,7 +611,7 @@ for ll in range(n_simu):
     # x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, rect_shape, fluid_shape = reset_all(n_part_particle)
 
     # Get trajectory:
-    data_record = get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=is_gui)
+    data_record = get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=is_gui, record_path=args.record_path)
     data_record["rect_shape"] = rect_shape
     data_record["fluid_shape"] = fluid_shape
 

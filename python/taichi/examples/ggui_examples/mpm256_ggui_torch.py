@@ -6,6 +6,7 @@
 
 import gc
 import numpy as np
+from copy import deepcopy
 import pdb
 import taichi as ti
 import pickle
@@ -16,7 +17,7 @@ import torch
 from torch.autograd import Variable
 import torch.nn.functional as F
 import argparse
-arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
+arch = ti.cpu
 ti.init(arch=arch)
 
 
@@ -65,6 +66,8 @@ def arg_parse():
                         help='If True, will use GUI.')
     parser.add_argument('--seed', type=int,
                         help='random seed.')
+    parser.add_argument('--record_path', type=str,
+                        help='Record path')
 
     parser.set_defaults(
         gravity_amp=2,
@@ -80,6 +83,7 @@ def arg_parse():
         is_save=True,
         gpuid="0",
         seed=1,
+        record_path="None",
     )
     try:
         get_ipython().run_line_magic('matplotlib', 'inline')
@@ -100,6 +104,13 @@ def set_seed(seed):
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         random.seed(seed)
+
+def clear_dir(dirname):
+    import os
+    import glob
+    files = glob.glob(dirname)
+    for f in files:
+        os.remove(f)
 
 
 args = arg_parse()
@@ -166,6 +177,40 @@ attractor_pos = torch.zeros(2, device=device, dtype=torch.float64)
 
 
 # In[ ]:
+
+def pdump(file, filename):
+    """Dump a file via pickle."""
+    with open(filename, "wb") as f:
+        pickle.dump(file, f)
+
+
+def pload(filename):
+    """Load a filename saved as pickle."""
+    with open(filename, "rb") as f:
+        file = pickle.load(f)
+    return file
+
+
+def record_data(data_record_dict, data_list, key_list, nolist=False, ignore_duplicate=False, recent_record=-1):
+    """Record data to the dictionary data_record_dict. It records each key: value pair in the corresponding location of 
+    key_list and data_list into the dictionary."""
+    if not isinstance(data_list, list):
+        data_list = [data_list]
+    if not isinstance(key_list, list):
+        key_list = [key_list]
+    assert len(data_list) == len(key_list), "the data_list and key_list should have the same length!"
+    for data, key in zip(data_list, key_list):
+        if nolist:
+            data_record_dict[key] = data
+        else:
+            if key not in data_record_dict:
+                data_record_dict[key] = [data]
+            else: 
+                if (not ignore_duplicate) or (data not in data_record_dict[key]):
+                    data_record_dict[key].append(data)
+            if recent_record != -1:
+                # Only keep the most recent records
+                data_record_dict[key] = data_record_dict[key][-recent_record:]
 
 
 @ti.kernel
@@ -564,7 +609,7 @@ def substep_torch3(x, v, C, F, Jp, grid_m, grid_v, gravity, epsilon=1e-6):
 # In[ ]:
 
 
-def get_trajectory(x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_particles, epsilon=1e-8, is_gui=True):
+def get_trajectory(x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_particles, epsilon=1e-8, is_gui=True, record_path="None"):
     # Reset other fields:
     v, C, F, material, Jp = reset_other_fields(n_particles)
     n_part_fluid = len(fluid)
@@ -600,8 +645,23 @@ def get_trajectory(x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_pa
         gravity[1] = -gravity_amp
         for s in range(int(2e-3 // dt)):
             x, v, C, F, Jp, grid_m, grid_v = substep_torch1(x, v, C, F, Jp, gravity, epsilon=epsilon)
+            if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_torch/{s}_substep1.p"):
+                record_dict = {}
+                record_data(record_dict, list(deepcopy((to_np_array(x), to_np_array(v), to_np_array(C), to_np_array(F), to_np_array(Jp), to_np_array(grid_m), to_np_array(grid_v)))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                make_dir(record_path + "/mpm256_torch/test")
+                pdump(record_dict, record_path + f"/mpm256_torch/{s}_substep1.p")
             x, v, C, F, Jp, grid_m, grid_v = substep_torch2(x, v, C, F, Jp, grid_m, grid_v, gravity, epsilon=epsilon)
+            if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_torch/{s}_substep2.p"):
+                record_dict = {}
+                record_data(record_dict, list(deepcopy((to_np_array(x), to_np_array(v), to_np_array(C), to_np_array(F), to_np_array(Jp), to_np_array(grid_m), to_np_array(grid_v)))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                make_dir(record_path + "/mpm256_torch/test")
+                pdump(record_dict, record_path + f"/mpm256_torch/{s}_substep2.p")
             x, v, C, F, Jp, grid_m, grid_v = substep_torch3(x, v, C, F, Jp, grid_m, grid_v, gravity, epsilon=epsilon)
+            if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_torch/{s}_substep3.p"):
+                record_dict = {}
+                record_data(record_dict, list(deepcopy((to_np_array(x), to_np_array(v), to_np_array(C), to_np_array(F), to_np_array(Jp), to_np_array(grid_m), to_np_array(grid_v)))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                make_dir(record_path + "/mpm256_torch/test")
+                pdump(record_dict, record_path + f"/mpm256_torch/{s}_substep3.p")
         particle, v_particle, fluid, v_fluid = render(x, v, n_part_particle)
         if is_gui:
             fluid_ti.from_numpy(fluid)
@@ -632,6 +692,8 @@ def get_trajectory(x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_pa
 
 threshold = 0
 set_seed(args.seed)
+if args.record_path != "None":
+    clear_dir(args.record_path + "/mpm256_torch/*")
 
 for ll in range(n_simu):
     print(f"Simu: {ll}")
@@ -679,7 +741,7 @@ for ll in range(n_simu):
 
     # Get trajectory:
     data_record = get_trajectory(
-        x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_particles, epsilon=args.epsilon, is_gui=is_gui)
+        x, fluid, v_fluid, particle, v_particle, grid_m, grid_v, n_particles, epsilon=args.epsilon, is_gui=is_gui, record_path=args.record_path)
     data_record["rect_shape"] = rect_shape
     data_record["fluid_shape"] = fluid_shape
 
