@@ -4,6 +4,7 @@
 # In[ ]:
 
 
+import os
 import gc
 import numpy as np
 import pdb
@@ -11,9 +12,6 @@ import pickle
 import taichi as ti
 import time
 import argparse
-
-arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
-ti.init(arch=arch)
 
 
 # In[ ]:
@@ -53,6 +51,10 @@ def arg_parse():
                         help='Maximum height of the fluid.')
     parser.add_argument('--is_save', type=str2bool, nargs='?', const=True, default=True,
                         help='If True, will use GUI.')
+    parser.add_argument('--gpuid', type=str,
+                        help='GPU ID.')
+    parser.add_argument('--traj_path', type=str,
+                        help='trajectory path')
 
     parser.set_defaults(
         gravity_amp=2,
@@ -65,6 +67,8 @@ def arg_parse():
         n_simu=500,
         height=0.25,
         is_save=True,
+        gpuid="0",
+        traj_path="/dfs/project/plasma/taichi_new/"
     )
     try:
         get_ipython().run_line_magic('matplotlib', 'inline')
@@ -74,6 +78,8 @@ def arg_parse():
     return args
 
 args = arg_parse()
+arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda if args.gpuid != "False" else ti.cpu
+ti.init(arch=arch)
 try:
     get_ipython().run_line_magic('matplotlib', 'inline')
     is_jupyter = True
@@ -89,41 +95,6 @@ is_particle = args.is_particle
 is_gui = args.is_gui
 n_simu = args.n_simu
 height = args.height
-
-
-# In[ ]:
-
-
-quality = 1  # Use a larger value for higher-res simulations
-n_particles, n_grid = 9000 * quality**2, n_grid * quality
-dx, inv_dx = 1 / n_grid, float(n_grid)
-dt = 5e-5 / quality
-p_vol, p_rho = (dx * 0.5)**2, 1
-p_mass = p_vol * p_rho
-E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
-mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
-    (1 + nu) * (1 - 2 * nu))  # Lame parameters
-
-x = ti.Vector.field(2, dtype=float, shape=n_particles)  # position
-v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
-C = ti.Matrix.field(2, 2, dtype=float,
-                    shape=n_particles)  # affine velocity field
-F = ti.Matrix.field(2, 2, dtype=float,
-                    shape=n_particles)  # deformation gradient
-material = ti.field(dtype=int, shape=n_particles)  # material id
-Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
-grid_v = ti.Vector.field(2, dtype=float,
-                         shape=(n_grid, n_grid))  # grid node momentum/velocity
-grid_m = ti.field(dtype=float, shape=(n_grid, n_grid))  # grid node mass
-gravity = ti.Vector.field(2, dtype=float, shape=())
-attractor_strength = ti.field(dtype=float, shape=())
-attractor_pos = ti.Vector.field(2, dtype=float, shape=())
-
-group_size = n_particles // 2
-water = ti.Vector.field(2, dtype=float, shape=group_size)  # position
-jelly = ti.Vector.field(2, dtype=float, shape=group_size)  # position
-snow = ti.Vector.field(2, dtype=float, shape=group_size)  # position
-mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
 
 
 # In[ ]:
@@ -193,6 +164,10 @@ def substep():
                 grid_v[i, j][1] = 0
             if j > n_grid - 3 and grid_v[i, j][1] > 0:
                 grid_v[i, j][1] = 0
+
+@ti.kernel
+def substep2():
+    # pickle.dump(grid_v.to_torch(), open("aha.p", "wb"))
     for p in x:  # grid to particle (G2P)
         base = (x[p] * inv_dx - 0.5).cast(int)
         fx = x[p] * inv_dx - base.cast(float)
@@ -389,6 +364,8 @@ def get_trajectory(fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=
         gravity[None][1] = -gravity_amp
         for s in range(int(2e-3 // dt)):
             substep()
+            # print(grid_v)
+            substep2()
         render()
         if is_gui:
             canvas.set_background_color((0.067, 0.184, 0.255))
@@ -466,6 +443,40 @@ def reset_all(n_part_particle):
 threshold = 0
 
 for ll in range(n_simu):
+    ti.init(arch=arch)
+    
+    quality = 1  # Use a larger value for higher-res simulations
+    n_particles, n_grid = 9000 * quality**2, n_grid * quality
+    dx, inv_dx = 1 / n_grid, float(n_grid)
+    dt = 5e-5 / quality
+    p_vol, p_rho = (dx * 0.5)**2, 1
+    p_mass = p_vol * p_rho
+    E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
+    mu_0, lambda_0 = E / (2 * (1 + nu)), E * nu / (
+        (1 + nu) * (1 - 2 * nu))  # Lame parameters
+
+    x = ti.Vector.field(2, dtype=float, shape=n_particles)  # position
+    v = ti.Vector.field(2, dtype=float, shape=n_particles)  # velocity
+    C = ti.Matrix.field(2, 2, dtype=float,
+                        shape=n_particles)  # affine velocity field
+    F = ti.Matrix.field(2, 2, dtype=float,
+                        shape=n_particles)  # deformation gradient
+    material = ti.field(dtype=int, shape=n_particles)  # material id
+    Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
+    grid_v = ti.Vector.field(2, dtype=float,
+                             shape=(n_grid, n_grid))  # grid node momentum/velocity
+    grid_m = ti.field(dtype=float, shape=(n_grid, n_grid))  # grid node mass
+    gravity = ti.Vector.field(2, dtype=float, shape=())
+    attractor_strength = ti.field(dtype=float, shape=())
+    attractor_pos = ti.Vector.field(2, dtype=float, shape=())
+
+    group_size = n_particles // 2
+    water = ti.Vector.field(2, dtype=float, shape=group_size)  # position
+    jelly = ti.Vector.field(2, dtype=float, shape=group_size)  # position
+    snow = ti.Vector.field(2, dtype=float, shape=group_size)  # position
+    mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
+
+    
     print(f"Simu: {ll}")
 
     fluid_shape = sample_shape()
@@ -523,11 +534,11 @@ for ll in range(n_simu):
     data_record["fluid_shape"] = fluid_shape
 
     if args.is_save:
-        data_dirname = f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}"
+        data_dirname = os.path.join(args.traj_path, f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}")
         data_filename = data_dirname + "/sim_{:06d}.p".format(ll)
         make_dir(data_filename)
         pickle.dump(data_record, open(data_filename, "wb"))
     del x, v, fluid, particle, v_fluid, v_particle, C, F, material, Jp, data_record
     gc.collect()
     print()
-
+    ti.reset()
