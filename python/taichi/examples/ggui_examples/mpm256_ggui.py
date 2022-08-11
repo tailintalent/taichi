@@ -72,7 +72,7 @@ def arg_parse():
         height=0.25,
         is_save=True,
         gpuid="0",
-        traj_path="/dfs/project/plasma/taichi_test/",
+        traj_path="/dfs/project/plasma/taichi_new_ggui/",
         seed=1,
         record_path="None",
     )
@@ -204,6 +204,8 @@ def substep1():
         ) + ti.Matrix.identity(float, 2) * la * J * (J - 1)
         stress = (-dt * p_vol * 4 * inv_dx * inv_dx) * stress
         affine = stress + p_mass * C[p]
+        test_item[p] = stress
+        
         # Loop over 3x3 grid node neighborhood
         for i, j in ti.static(ti.ndrange(3, 3)):
             offset = ti.Vector([i, j])
@@ -223,6 +225,7 @@ def substep2():
             dist = attractor_pos[None] - dx * ti.Vector([i, j])
             grid_v[i, j] += dist / (
                 0.01 + dist.norm()) * attractor_strength[None] * dt * 100
+            test_grid[i,j] = grid_v[i,j]
             if i < 3 and grid_v[i, j][0] < 0:
                 grid_v[i, j][0] = 0  # Boundary conditions
             if i > n_grid - 3 and grid_v[i, j][0] > 0:
@@ -246,9 +249,11 @@ def substep3():
             g_v = grid_v[base + ti.Vector([i, j])]
             weight = w[i][0] * w[j][1]
             new_v += weight * g_v
-            new_C += 4 * inv_dx * weight * g_v.outer_product(dpos)
+            outer = g_v.outer_product(dpos)
+            new_C += 4 * inv_dx * weight * outer
         v[p], C[p] = new_v, new_C
         x[p] += dt * v[p]  # advection
+        
 
 
 @ti.kernel
@@ -432,18 +437,18 @@ def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particl
             substep1()
             if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep1.p"):
                 record_dict = {}
-                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), test_item.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "test_item"], nolist=True)
                 make_dir(record_path + "/mpm256_ori/test")
                 pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep1.p")
             substep2()
             if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep2.p"):
                 record_dict = {}
-                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), test_grid.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "test_grid"], nolist=True)
                 pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep2.p")
             substep3()
             if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep3.p"):
                 record_dict = {}
-                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v"], nolist=True)
+                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), test_item.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "test_item"], nolist=True)
                 pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep3.p")
         render()
         if is_gui:
@@ -520,11 +525,11 @@ def reset_all(n_part_particle):
 
 
 threshold = 0
-set_seed(args.seed)
 if args.record_path != "None":
     clear_dir(args.record_path + "/mpm256_ori/*")
 
 for ll in range(n_simu):
+    set_seed(args.seed + ll)
     ti.init(arch=arch)
     
     quality = 1  # Use a larger value for higher-res simulations
@@ -604,6 +609,8 @@ for ll in range(n_simu):
     F = ti.Matrix.field(2, 2, dtype=float, shape=n_particles)  # deformation gradient
     material = ti.field(dtype=int, shape=n_particles)  # material id
     Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
+    test_item = ti.Matrix.field(2,2, dtype=float, shape=n_particles)  # plastic deformation
+    test_grid = ti.Vector.field(2, dtype=float, shape=(n_grid, n_grid))
 
     # Reset other fields:
     reset_other_fields(n_particles)
