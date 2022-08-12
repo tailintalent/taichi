@@ -417,6 +417,12 @@ def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particl
     data_record["grid_v"] = -np.ones((n_steps, n_grid, n_grid, 2))
     data_record["n_part_fluid"] = fluid.shape[0]
     data_record["n_part_particle"] = particle.shape[0]
+    n_particles = particle.shape[0] + fluid.shape[0]
+    data_record["x"] = -np.ones((n_steps, n_particles, 2))
+    data_record["v"] = -np.ones((n_steps, n_particles, 2))
+    data_record["C"] = -np.ones((n_steps, n_particles, 2, 2))
+    data_record["F"] = -np.ones((n_steps, n_particles, 2, 2))
+    data_record["Jp"] = -np.ones((n_steps, n_particles))
     if is_gui:
         res = (512, 512)
         window = ti.ui.Window("Taichi MLS-MPM-128", res=res, vsync=True)
@@ -463,6 +469,11 @@ def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particl
         data_record["v_particle"][k] = v_particle.to_numpy()
         data_record["grid_m"][k] = grid_m.to_numpy()
         data_record["grid_v"][k] = grid_v.to_numpy()
+        data_record["x"][k] = x.to_numpy()
+        data_record["v"][k] = v.to_numpy()
+        data_record["C"][k] = C.to_numpy()
+        data_record["F"][k] = F.to_numpy()
+        data_record["Jp"][k] = Jp.to_numpy()
         k += 1
         if k >= n_steps:
             break
