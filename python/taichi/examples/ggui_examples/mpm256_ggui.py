@@ -39,6 +39,8 @@ def arg_parse():
                         help='Number of particles')
     parser.add_argument('--n_grid', type=int,
                         help='Grid size. E.g. --n_grid=256 means the 2D space is 256x256.')
+    parser.add_argument('--grid_width', type=float,
+                        help='Width. By default is 1.')
     parser.add_argument('--n_steps', type=int,
                         help='Number of simulation steps')
     parser.add_argument('--is_particle', type=str2bool, nargs='?', const=True, default=True,
@@ -65,6 +67,7 @@ def arg_parse():
         max_n_part_fluid=30000,
         n_part_particle=1000,
         n_grid=256,
+        grid_width=1.,
         n_steps=200,
         is_particle=True,
         is_gui=False,
@@ -142,7 +145,7 @@ def record_data(data_record_dict, data_list, key_list, nolist=False, ignore_dupl
 
 
 args = arg_parse()
-arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda if args.gpuid != "False" else ti.cpu
+arch = ti.cuda if args.gpuid != "False" else ti.vulkan if ti._lib.core.with_vulkan() else ti.cpu
 ti.init(arch=arch)
 try:
     get_ipython().run_line_magic('matplotlib', 'inline')
@@ -154,6 +157,8 @@ gravity_amp = args.gravity_amp
 max_n_part_fluid = args.max_n_part_fluid
 n_part_particle = args.n_part_particle
 n_grid = args.n_grid
+grid_width = args.grid_width
+n_grid_width = int(args.n_grid * args.grid_width)
 n_steps = args.n_steps
 is_particle = args.is_particle
 is_gui = args.is_gui
@@ -165,11 +170,17 @@ height = args.height
 
 
 @ti.kernel
-def substep1():
+def substep1(is_save_all: ti.i32):
     for i, j in grid_m:
-        # gri_v & grid_m: [n_grd, n_grid]
+        # gri_v & grid_m: [n_grid_width, n_grid]
         grid_v[i, j] = [0, 0]
         grid_m[i, j] = 0
+        if is_save_all == 1:
+            grid_C[i, j] = [[0,0], [0,0]]
+            grid_F[i, j] = [[0,0], [0,0]]
+            grid_Jp[i, j] = 0
+            grid_stress[i, j] = [[0,0], [0,0]]
+            grid_affine[i, j] = [0,0]
     for p in x:  # x: [n_particles] Particle state update and scatter to grid (P2G)
         base = (x[p] * inv_dx - 0.5).cast(int)  # index of the grid
         fx = x[p] * inv_dx - base.cast(float)   # location in the grid
@@ -213,6 +224,12 @@ def substep1():
             weight = w[i][0] * w[j][1]
             grid_v[base + offset] += weight * (p_mass * v[p] + affine @ dpos)
             grid_m[base + offset] += weight * p_mass
+            if is_save_all == 1:
+                grid_C[base + offset] += weight * C[p]
+                grid_F[base + offset] += weight * F[p]
+                grid_Jp[base + offset] += weight * Jp[p]
+                grid_stress[base + offset] += weight * stress
+                grid_affine[base + offset] += weight * (affine @ dpos)
 
 @ti.kernel
 def substep2():
@@ -228,7 +245,7 @@ def substep2():
             test_grid[i,j] = grid_v[i,j]
             if i < 3 and grid_v[i, j][0] < 0:
                 grid_v[i, j][0] = 0  # Boundary conditions
-            if i > n_grid - 3 and grid_v[i, j][0] > 0:
+            if i > n_grid_width - 3 and grid_v[i, j][0] > 0:
                 grid_v[i, j][0] = 0
             if j < 3 and grid_v[i, j][1] < 0:
                 grid_v[i, j][1] = 0
@@ -259,14 +276,15 @@ def substep3():
 @ti.kernel
 def reset():
     for i in range(n_particles):
+        epsilon = 1e-3
         if i < group_size:
             x[i] = [
-                ti.random() * 1,
-                ti.random() * 0.2
+                ti.random() * (grid_width - epsilon * 2) + epsilon,
+                ti.random() * (0.2 - epsilon * 2) + epsilon
             ]
         else:
             x[i] = [
-                ti.random() * 0.2 + 0.3 + 0.10 * (i // group_size),
+                (ti.random() * 0.2 + 0.3 + 0.10 * (i // group_size)) * grid_width,
                 ti.random() * 0.2 + 0.05 + 0.32 * (i // group_size)
             ]
         material[i] = i // group_size  # 0: fluid 1: jelly 2: snow
@@ -303,14 +321,14 @@ def sample_shape():
     if np.random.rand() > 0.5:
         y1, y2 = y2, y1
     shape = [
-        ((0, y1), (1, y2), 0),
+        ((0, y1), (grid_width, y2), 0),
     ]
     return shape
 
 
 def get_fluid(fluid_shape, n_part, height, epsilon=1e-3):
     x_np = np.stack([
-        np.random.rand(n_part) * (1 - epsilon * 2) + epsilon,
+        np.random.rand(n_part) * (grid_width - epsilon * 2) + epsilon,
         np.random.rand(n_part) * height + epsilon,
     ], -1)
     lx = x_np[:, 0]
@@ -331,8 +349,8 @@ def get_fluid(fluid_shape, n_part, height, epsilon=1e-3):
 
 
 def sample_rect_shape():
-    x1 =  np.random.rand() * 0.2 + 0.1
-    x2 = -np.random.rand() * 0.2 + 0.9
+    x1 = (np.random.rand() * 0.2 + 0.1) * grid_width
+    x2 = (-np.random.rand() * 0.2 + 0.9) * grid_width
     y1 = np.random.rand() * 0.2 + 0.4
     y2 = np.random.rand() * 0.2 + 0.8
     rect_shape = (x1, y1), (x2, y2)
@@ -407,14 +425,19 @@ def remove_too_near(x_np, threshold, mode="simu"):
 # In[ ]:
 
 
-def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=True, record_path="None"):
+def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, grid_m, grid_v, grid_C, grid_F, grid_Jp, grid_stress, grid_affine, is_gui=True, record_path="None"):
     data_record = {}
     data_record["x_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
     data_record["v_fluid"] = -np.ones((n_steps, fluid.shape[0], 2))
     data_record["x_particle"] = -np.ones((n_steps, particle.shape[0], 2))
     data_record["v_particle"] = -np.ones((n_steps, particle.shape[0], 2))
-    data_record["grid_m"] = -np.ones((n_steps, n_grid, n_grid))
-    data_record["grid_v"] = -np.ones((n_steps, n_grid, n_grid, 2))
+    data_record["grid_m"] = -np.ones((n_steps, n_grid_width, n_grid))
+    data_record["grid_v"] = -np.ones((n_steps, n_grid_width, n_grid, 2))
+    data_record["grid_C"] = -np.ones((n_steps, n_grid_width, n_grid, 2, 2))
+    data_record["grid_F"] = -np.ones((n_steps, n_grid_width, n_grid, 2, 2))
+    data_record["grid_Jp"] = -np.ones((n_steps, n_grid_width, n_grid))
+    data_record["grid_stress"] = -np.ones((n_steps, n_grid_width, n_grid, 2, 2))
+    data_record["grid_affine"] = -np.ones((n_steps, n_grid_width, n_grid, 2))
     data_record["n_part_fluid"] = fluid.shape[0]
     data_record["n_part_particle"] = particle.shape[0]
     n_particles = particle.shape[0] + fluid.shape[0]
@@ -435,26 +458,33 @@ def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particl
         if is_gui:
             if window.get_event(ti.ui.PRESS):
                 if window.event.key == 'r':
-                    x, v, C, F, material, Jp, fluid, particle, n_particles, n_part_fluid = reset_all()
+                    x, v, C, F, material, Jp, fluid, particle, n_particles, n_part_fluid = reset_all(particle.shape[0])
                 elif window.event.key in [ti.ui.ESCAPE]:
                     break
         gravity[None][1] = -gravity_amp
-        for s in range(int(2e-3 // dt)):
-            substep1()
+        total_substeps = int(2e-3 // dt)
+        for s in range(total_substeps):
+            substep1(is_save_all=1 if s==total_substeps-1 else 0)
             if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep1.p"):
                 record_dict = {}
-                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), test_item.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "test_item"], nolist=True)
+                record_data(record_dict, 
+                            list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), grid_C.to_numpy(), grid_F.to_numpy(), grid_Jp.to_numpy(), grid_stress.to_numpy(), grid_affine.to_numpy(), test_item.to_numpy()))),
+                            ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "grid_C", "grid_F", "grid_Jp", "grid_stress", "grid_affine", "test_item"], nolist=True)
                 make_dir(record_path + "/mpm256_ori/test")
                 pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep1.p")
             substep2()
             if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep2.p"):
                 record_dict = {}
-                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), test_grid.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "test_grid"], nolist=True)
+                record_data(record_dict, 
+                            list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), grid_C.to_numpy(), grid_F.to_numpy(), grid_Jp.to_numpy(), grid_stress.to_numpy(), grid_stress.to_numpy(), test_item.to_numpy()))),
+                            ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "grid_C", "grid_F", "grid_Jp", "grid_stress", "grid_affine", "test_item"], nolist=True)
                 pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep2.p")
             substep3()
             if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep3.p"):
                 record_dict = {}
-                record_data(record_dict, list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), test_item.to_numpy()))), ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "test_item"], nolist=True)
+                record_data(record_dict, 
+                            list(deepcopy((x.to_numpy(), v.to_numpy(), C.to_numpy(), F.to_numpy(), Jp.to_numpy(), grid_m.to_numpy(), grid_v.to_numpy(), grid_C.to_numpy(), grid_F.to_numpy(), grid_Jp.to_numpy(), grid_stress.to_numpy(), grid_stress.to_numpy(), test_item.to_numpy()))),
+                            ["x", "v", "C", "F", "Jp", "grid_m", "grid_v", "grid_C", "grid_F", "grid_Jp", "grid_stress", "grid_affine", "test_item"], nolist=True)
                 pdump(record_dict, record_path + f"/mpm256_ori/{s}_substep3.p")
         render()
         if is_gui:
@@ -469,6 +499,11 @@ def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particl
         data_record["v_particle"][k] = v_particle.to_numpy()
         data_record["grid_m"][k] = grid_m.to_numpy()
         data_record["grid_v"][k] = grid_v.to_numpy()
+        data_record["grid_C"][k] = grid_C.to_numpy()
+        data_record["grid_F"][k] = grid_F.to_numpy()
+        data_record["grid_Jp"][k] = grid_Jp.to_numpy()
+        data_record["grid_stress"][k] = grid_stress.to_numpy()
+        data_record["grid_affine"][k] = grid_affine.to_numpy()
         data_record["x"][k] = x.to_numpy()
         data_record["v"][k] = v.to_numpy()
         data_record["C"][k] = C.to_numpy()
@@ -561,9 +596,13 @@ for ll in range(n_simu):
                         shape=n_particles)  # deformation gradient
     material = ti.field(dtype=int, shape=n_particles)  # material id
     Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
-    grid_v = ti.Vector.field(2, dtype=float,
-                             shape=(n_grid, n_grid))  # grid node momentum/velocity
-    grid_m = ti.field(dtype=float, shape=(n_grid, n_grid))  # grid node mass
+    grid_m = ti.field(dtype=float, shape=(n_grid_width, n_grid))  # grid node mass
+    grid_v = ti.Vector.field(2, dtype=float, shape=(n_grid_width, n_grid))  # grid node momentum/velocity
+    grid_C = ti.Matrix.field(2, 2, dtype=float, shape=(n_grid_width, n_grid))
+    grid_F = ti.Matrix.field(2, 2, dtype=float, shape=(n_grid_width, n_grid))
+    grid_Jp = ti.field(dtype=float, shape=(n_grid_width, n_grid))
+    grid_stress = ti.Matrix.field(2, 2, dtype=float, shape=(n_grid_width, n_grid))
+    grid_affine = ti.Vector.field(2, dtype=float, shape=(n_grid_width, n_grid))
     gravity = ti.Vector.field(2, dtype=float, shape=())
     attractor_strength = ti.field(dtype=float, shape=())
     attractor_pos = ti.Vector.field(2, dtype=float, shape=())
@@ -574,7 +613,7 @@ for ll in range(n_simu):
     snow = ti.Vector.field(2, dtype=float, shape=group_size)  # position
     mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
 
-    
+
     print(f"Simu: {ll}")
 
     fluid_shape = sample_shape()
@@ -621,7 +660,7 @@ for ll in range(n_simu):
     material = ti.field(dtype=int, shape=n_particles)  # material id
     Jp = ti.field(dtype=float, shape=n_particles)  # plastic deformation
     test_item = ti.Matrix.field(2,2, dtype=float, shape=n_particles)  # plastic deformation
-    test_grid = ti.Vector.field(2, dtype=float, shape=(n_grid, n_grid))
+    test_grid = ti.Vector.field(2, dtype=float, shape=(n_grid_width, n_grid))
 
     # Reset other fields:
     reset_other_fields(n_particles)
@@ -629,12 +668,32 @@ for ll in range(n_simu):
     # x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, rect_shape, fluid_shape = reset_all(n_part_particle)
 
     # Get trajectory:
-    data_record = get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particle, grid_m, grid_v, is_gui=is_gui, record_path=args.record_path)
+    data_record = get_trajectory(
+        x=x,
+        v=v,
+        C=C,
+        F=F,
+        material=material,
+        Jp=Jp,
+        fluid=fluid,
+        v_fluid=v_fluid,
+        particle=particle,
+        v_particle=v_particle,
+        grid_m=grid_m,
+        grid_v=grid_v,
+        grid_C=grid_C,
+        grid_F=grid_F,
+        grid_Jp=grid_Jp,
+        grid_stress=grid_stress,
+        grid_affine=grid_affine,
+        is_gui=is_gui,
+        record_path=args.record_path,
+    )
     data_record["rect_shape"] = rect_shape
     data_record["fluid_shape"] = fluid_shape
 
     if args.is_save:
-        data_dirname = os.path.join(args.traj_path, f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}")
+        data_dirname = os.path.join(args.traj_path, f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}_gridwidth_{grid_width}")
         data_filename = data_dirname + "/sim_{:06d}.p".format(ll)
         make_dir(data_filename)
         pickle.dump(data_record, open(data_filename, "wb"))
