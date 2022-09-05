@@ -61,6 +61,8 @@ def arg_parse():
                         help='random seed.')
     parser.add_argument('--record_path', type=str,
                         help='Record path')
+    parser.add_argument('--dt_interval', type=float,
+                        help='interval to record the data.')
 
     parser.set_defaults(
         gravity_amp=2,
@@ -78,6 +80,7 @@ def arg_parse():
         traj_path="/dfs/project/plasma/taichi_new_ggui/",
         seed=1,
         record_path="None",
+        dt_interval=2e-3,
     )
     try:
         get_ipython().run_line_magic('matplotlib', 'inline')
@@ -462,7 +465,7 @@ def get_trajectory(x, v, C, F, material, Jp, fluid, v_fluid, particle, v_particl
                 elif window.event.key in [ti.ui.ESCAPE]:
                     break
         gravity[None][1] = -gravity_amp
-        total_substeps = int(2e-3 // dt)
+        total_substeps = int(args.dt_interval // dt)
         for s in range(total_substeps):
             substep1(is_save_all=1 if s==total_substeps-1 else 0)
             if record_path != "None" and not os.path.isfile(record_path + f"/mpm256_ori/{s}_substep1.p"):
@@ -642,8 +645,6 @@ for ll in range(n_simu):
         x_combine = np.concatenate([x_particle, x_fluid]).astype(np.float32)
         n_particles = n_part_fluid + n_part_particle
 
-    data_dirname = f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{n_part_particle}_g_{gravity_amp}_thresh_{threshold}"
-
     x = ti.Vector.field(2, dtype=float, shape=n_particles)
     x.from_numpy(x_combine)
     fluid = ti.Vector.field(2, dtype=float, shape=n_part_fluid)
@@ -693,7 +694,7 @@ for ll in range(n_simu):
     data_record["fluid_shape"] = fluid_shape
 
     if args.is_save:
-        data_dirname = os.path.join(args.traj_path, f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}_gridwidth_{grid_width}")
+        data_dirname = os.path.join(args.traj_path, f"taichi_hybrid_simu_{n_simu}_step_{n_steps}_h_{height}_fluid_{max_n_part_fluid}_part_{particle.shape[0]}_g_{gravity_amp}_thresh_{threshold}_gridwidth_{grid_width}_dt-interval_{args.dt_interval}")
         data_filename = data_dirname + "/sim_{:06d}.p".format(ll)
         make_dir(data_filename)
         pickle.dump(data_record, open(data_filename, "wb"))
